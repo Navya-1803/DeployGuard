@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>DeployGuard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+:root{--bg:#0f1420;--card:#171e2e;--bd:#27314a;--tx:#e6ebf5;--mu:#8b97b3;--ok:#2ecc71;--bad:#ff5c6c;--warn:#f5b942;--ac:#5b8cff}
+*{box-sizing:border-box}body{margin:0;font:14px/1.45 system-ui,Segoe UI,sans-serif;background:var(--bg);color:var(--tx)}
+header{padding:16px 24px;border-bottom:1px solid var(--bd);display:flex;justify-content:space-between;align-items:center}
+h1{margin:0;font-size:20px}h1 small{color:var(--mu);font-weight:400;font-size:13px;margin-left:8px}
+main{padding:20px 24px;display:grid;gap:16px;max-width:1200px;margin:auto}
+.row{display:grid;gap:16px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:12px;padding:16px}
+.card h3{margin:0 0 10px;font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--mu)}
+.big{font-size:34px;font-weight:700}.mu{color:var(--mu)}
+button{background:var(--ac);color:#fff;border:0;border-radius:8px;padding:8px 12px;cursor:pointer;font-size:13px}
+button.sec{background:#26304a}button:disabled{opacity:.4;cursor:not-allowed}
+.sc{display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
+.sc button{text-align:left;background:#1f2842;border:1px solid var(--bd);padding:10px}.sc button:hover:not(:disabled){border-color:var(--ac)}
+.sc b{display:block}.sc span{color:var(--mu);font-size:12px}
+.steps{display:flex;gap:6px;margin:6px 0 12px;flex-wrap:wrap}
+.step{padding:4px 10px;border-radius:20px;background:#212a42;color:var(--mu);font-size:12px}
+.step.done{background:#1d4a34;color:#9ff0c0}.step.cur{background:var(--ac);color:#fff}.step.fail{background:#5a2330;color:#ffb3bc}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--bd);font-size:13px}th{color:var(--mu);font-weight:500}
+.pill{padding:2px 8px;border-radius:10px;font-size:12px}
+.p-live{background:#1d4a34;color:#9ff0c0}.p-blocked,.p-failed{background:#5a2330;color:#ffb3bc}.p-rolled_back{background:#5a4a1c;color:#ffd98a}.p-validating{background:#233a6b;color:#b7ccff}
+.gauge{height:10px;border-radius:6px;background:#212a42;overflow:hidden;position:relative}.gauge i{display:block;height:100%}
+.ev{font-family:ui-monospace,Consolas,monospace;font-size:12px;max-height:190px;overflow:auto;background:#0c111b;border-radius:8px;padding:8px}
+.ev .error{color:var(--bad)}.ev .ok{color:var(--ok)}
+.dots{display:flex;gap:3px;flex-wrap:wrap;margin-top:8px}.dot{width:10px;height:10px;border-radius:50%}
+.v{color:var(--ac)}.hist{cursor:pointer}.hist:hover{background:#1d2540}
+details summary{cursor:pointer;color:var(--mu)}input{background:#0c111b;border:1px solid var(--bd);color:var(--tx);border-radius:6px;padding:6px;margin:4px 4px 4px 0}
+</style></head><body>
+<header><h1>DeployGuard <small>safe deployment · differential verification · auto-rollback</small></h1>
+<div><span class="pill" id="qb" style="margin-right:10px">RabbitMQ: ...</span><button class="sec" onclick="resetAll()">Reset demo</button></div></header>
+<main>
+<div class="row">
+ <div class="card"><h3>Live version (users see this)</h3><div class="big" id="live">-</div><div class="mu" id="live2">nothing deployed yet</div></div>
+ <div class="card"><h3>Rollback standby</h3><div class="big" id="stby">-</div><div class="mu">kept running until the next release</div></div>
+ <div class="card"><h3>User traffic simulator</h3>
+  <button id="tbtn" onclick="toggleTraffic()">Start traffic</button>
+  <span class="mu" id="served" style="margin-left:8px">stopped</span><div class="dots" id="dots"></div>
+  <div class="mu" style="margin-top:6px;font-size:12px">Each dot = one user request via the DeployGuard gateway. Green = OK, red = error.</div></div>
+</div>
+<div class="card"><h3>Release scenarios (click to deploy)</h3><div class="sc" id="sc"></div>
+ <details style="margin-top:10px"><summary>Deploy your own image</summary>
+  <input id="ci" placeholder="image e.g. myapp:2.0"><input id="cv" placeholder="version" size="8"><input id="cp" placeholder="port" size="5" value="5000"><input id="cpr" placeholder="probe paths: /health,/api/x" size="26">
+  <button onclick="custom()">Deploy</button></details></div>
+<div class="card" id="cur"><h3>Current deployment</h3><div class="mu">Deploy something to begin.</div></div>
+<div class="card"><h3>Deployment history</h3><table><thead><tr><th>Time</th><th>Version</th><th>Status</th><th>Risk</th><th>Verdict</th></tr></thead><tbody id="hist"></tbody></table></div>
+</main>
+<script>
+const STAGES=[["queued","Queued (RabbitMQ)"],["starting","Isolated container"],["health","Health check"],["differential","Live vs new comparison"],["switch","Traffic switch"],["monitoring","Post-deploy watch"]];
+let S=null,sel=null,tInt=null,tlog=[];
+const $=id=>document.getElementById(id);
+async function poll(){try{S=await (await fetch('/api/state')).json();render()}catch(e){}}
+function render(){
+ $('live').innerHTML=S.active?'<span class="v">v'+S.active.version+'</span>':'-';
+ $('live2').textContent=S.active?S.active.name:'nothing deployed yet';
+ if(S.queue){$('qb').textContent='RabbitMQ: '+(S.queue.connected?'connected · '+S.queue.processed+' jobs processed':'not connected (direct mode)');$('qb').className='pill '+(S.queue.connected?'p-live':'p-rolled_back')}
+ $('stby').innerHTML=S.standby?'v'+S.standby.version:'-';
+ if(!$('sc').children.length||$('sc').dataset.n!=S.scenarios.length){$('sc').dataset.n=S.scenarios.length;
+  $('sc').innerHTML=S.scenarios.map(s=>`<button data-k="${s.key}" onclick="dep('${s.key}')"><b>${s.label}</b><span>${s.desc}</span></button>`).join('')}
+ document.querySelectorAll('#sc button').forEach(b=>b.disabled=S.busy);
+ const d=S.deployments.find(x=>x.id===sel)||S.deployments[0];
+ renderDep(d);
+ $('hist').innerHTML=S.deployments.map(x=>`<tr class="hist" onclick="sel='${x.id}';render()"><td>${x.started}</td><td>v${x.version}</td><td><span class="pill p-${x.status}">${x.status.replace('_',' ')}</span></td><td>${x.score??'-'}</td><td class="mu">${x.verdict||''}</td></tr>`).join('');
+}
+function renderDep(d){
+ if(!d)return;
+ const idx=STAGES.findIndex(s=>s[0]===d.stage);
+ const failed=d.status==='blocked'||d.status==='failed';
+ const steps=STAGES.map((s,i)=>{let c='step';
+   if(d.stage==='done'){ if(failed){c+=i<(d.rows.length?3:2)?' done':(i===(d.rows.length?3:2)?' fail':'')}
+      else if(d.status==='rolled_back'){c+=i<5?' done':' fail'} else c+=' done'}
+   else c+=i<idx?' done':(i===idx?' cur':'');
+   return `<div class="${c}">${s[1]}</div>`}).join('');
+ const sc=d.score??0,col=sc>=S.threshold?'var(--bad)':(sc>0?'var(--warn)':'var(--ok)');
+ const rows=d.rows.map(r=>`<tr><td>${r.path}</td><td>${r.live_status??'-'} / ${r.live_ms??'-'} ms</td><td>${r.cand_status} / ${r.cand_ms} ms</td><td style="color:${r.ok?'var(--ok)':'var(--bad)'}">${r.ok?'✔':'✘'} ${r.note}</td></tr>`).join('');
+ const m=d.monitor?`<div class="mu" style="margin:8px 0">Post-deploy monitor: error rate <b>${d.monitor.error_rate}%</b> · ${d.monitor.done?'window complete':d.monitor.remaining+'s left'}</div>`:'';
+ $('cur').innerHTML=`<h3>Deployment of v${d.version} <span class="pill p-${d.status}">${d.status.replace('_',' ')}</span> <span class="mu" style="text-transform:none">via ${d.via}</span></h3>
+  <div class="steps">${steps}</div>
+  <div style="display:flex;gap:12px;align-items:center;margin-bottom:8px"><div style="min-width:110px">Risk score <b>${d.score??'-'}</b>/100</div>
+   <div class="gauge" style="flex:1"><i style="width:${sc}%;background:${col}"></i></div><div class="mu">block at ≥ ${S.threshold}</div></div>
+  ${d.verdict?`<div style="margin:8px 0"><b>Verdict:</b> ${d.verdict}</div>`:''}${m}
+  ${rows?`<table><thead><tr><th>Probe</th><th>Live (status / latency)</th><th>New (status / latency)</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`:''}
+  <div class="ev" style="margin-top:10px">${d.events.map(e=>`<div class="${e.level}">[${e.t}] ${e.msg}</div>`).join('')}</div>`;
+}
+async function dep(k){sel=null;const r=await fetch('/api/deploy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({scenario:k})});if(!r.ok)alert((await r.json()).detail);poll()}
+async function custom(){sel=null;const r=await fetch('/api/deploy',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({image:$('ci').value,version:$('cv').value,port:$('cp').value,probes:$('cpr').value})});if(!r.ok)alert((await r.json()).detail);poll()}
+async function resetAll(){await fetch('/api/reset',{method:'POST'});sel=null;tlog=[];$('dots').innerHTML='';poll()}
+function toggleTraffic(){
+ if(tInt){clearInterval(tInt);tInt=null;$('tbtn').textContent='Start traffic';$('served').textContent='stopped';return}
+ $('tbtn').textContent='Stop traffic';
+ tInt=setInterval(async()=>{let ok=false,v='-';
+   try{const r=await fetch('/live/api/products');ok=r.ok;v=r.headers.get('x-app-version')||'-'}catch(e){}
+   tlog.push({ok,v});tlog=tlog.slice(-40);
+   $('served').innerHTML='last served by <b class="v">v'+v+'</b>';
+   $('dots').innerHTML=tlog.map(t=>`<div class="dot" title="v${t.v}" style="background:${t.ok?'var(--ok)':'var(--bad)'}"></div>`).join('')},400)}
+poll();setInterval(poll,1000);
+</script></body></html>
