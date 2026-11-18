@@ -1,0 +1,43 @@
+name: deployguard
+services:
+  # Message broker: deployment requests are queued here and processed by a worker inside DeployGuard.
+  rabbitmq:
+    image: rabbitmq:3.13-management
+    container_name: dg-rabbitmq
+    ports:
+      - "15672:15672"      # RabbitMQ management UI (login: guest / guest)
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 10s
+      retries: 20
+    networks: [dgnet]
+
+  # Builds the sample "shopping app" image that DeployGuard deploys as v1, v2...
+  demo-app-image:
+    build: ./demo-app
+    image: deployguard-demo-app:latest
+    entrypoint: ["true"]
+    restart: "no"
+
+  deployguard:
+    build: ./deployguard
+    container_name: dg-api
+    ports:
+      - "8000:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NETWORK_NAME=deployguard_net
+      - RISK_THRESHOLD=50
+      - RABBIT_URL=amqp://guest:guest@rabbitmq:5672/%2F?heartbeat=0&connection_attempts=3&retry_delay=1
+    networks: [dgnet]
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      demo-app-image:
+        condition: service_completed_successfully
+
+networks:
+  dgnet:
+    name: deployguard_net
