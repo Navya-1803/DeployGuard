@@ -14,7 +14,7 @@ Open a second PowerShell window and run `docker ps` during the demo: `dg-*` cont
 Manual alternative: `docker compose up --build`, then open http://localhost:8000 and click the scenarios.
 RabbitMQ console: http://localhost:15672 (guest / guest). Stop everything: `docker compose down`.
 
-## Novelty (claim this honestly)
+## Novelty
 Argo Rollouts, Flagger and Spinnaker already do blue-green, canary and rollback. We do NOT claim those are new. Our contribution:
 1. **Zero-test differential verification**: no test suite needed. The same requests are replayed against the live and the new version; status, JSON structure and latency are compared with the live baseline.
 2. **Breaking vs additive change detection**: a removed or retyped field blocks the release; a new field passes.
